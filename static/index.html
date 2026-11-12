@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newsstand (Newsboy) Simulation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{--bg:#fafafa;--fg:#1a1a1a;--card:#fff;--bd:#ddd;--ac:#2563eb;--mut:#666}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#eee;--card:#1e1e1e;--bd:#333;--ac:#6ea0ff;--mut:#999}}
+*{box-sizing:border-box}
+body{margin:0;font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);padding:16px;max-width:1100px;margin:auto}
+h1{font-size:1.4rem;margin:.2em 0}h2{font-size:1.05rem;margin:0 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+label{display:flex;flex-direction:column;font-size:.8rem;color:var(--mut);gap:3px}
+input{padding:6px;border:1px solid var(--bd);border-radius:5px;background:var(--bg);color:var(--fg);font-size:1rem}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--ac);color:#fff;font-size:.95rem;cursor:pointer;margin:8px 6px 0 0}
+button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+.tw{overflow-x:auto;max-height:360px;overflow-y:auto}
+table{border-collapse:collapse;width:100%;font-size:.85rem}
+th,td{padding:4px 8px;text-align:right;border-bottom:1px solid var(--bd);white-space:nowrap}
+th{position:sticky;top:0;background:var(--card)}td:nth-child(3){text-align:center}
+.stats{display:flex;gap:24px;flex-wrap:wrap}.stats b{font-size:1.3rem;display:block}
+.stats span{font-size:.8rem;color:var(--mut)}
+.chart{position:relative;height:260px}
+.neg{color:#d33}.best{font-weight:700;color:var(--ac)}
+small{color:var(--mut)}
+</style>
+</head>
+<body>
+<h1>Newsstand Simulation</h1>
+<small>Example from Banks et al., <i>Discrete-Event System Simulation</i>: random digit 1 → newsday type, random digit 2 → demand, then daily profit.</small>
+
+<div class="card">
+  <h2>Parameters</h2>
+  <div class="grid">
+    <label>Days (N)<input id="days" type="number" value="20" min="1" max="5000"></label>
+    <label>Papers ordered / day<input id="q" type="number" value="70" min="0" step="10"></label>
+    <label>Cost / paper ($)<input id="cost" type="number" value="0.33" step="0.01"></label>
+    <label>Selling price ($)<input id="price" type="number" value="0.50" step="0.01"></label>
+    <label>Scrap value ($)<input id="scrap" type="number" value="0.05" step="0.01"></label>
+    <label>Seed (optional)<input id="seed" type="number" placeholder="random"></label>
+  </div>
+  <button id="run">Run simulation</button>
+  <button id="step" class="sec">Step 1 day</button>
+  <button id="play" class="sec">Animate</button>
+  
+</div>
+
+<div class="card">
+  <div class="stats">
+    <div><b id="sTotal">–</b><span>Total profit</span></div>
+    <div><b id="sAvg">–</b><span>Avg profit / day</span></div>
+    <div><b id="sShort">–</b><span>Days with lost sales</span></div>
+    <div><b id="sExcess">–</b><span>Days with scrap</span></div>
+  </div>
+  <div class="chart"><canvas id="c1"></canvas></div>
+</div>
+
+<div class="card">
+  <h2>Simulation table</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Day</th><th>RD (type)</th><th>Newsday</th><th>RD (demand)</th><th>Demand</th>
+    <th>Revenue</th><th>Cost</th><th>Lost profit</th><th>Salvage</th><th>Daily profit</th></tr></thead>
+    <tbody id="tb"></tbody>
+  </table></div>
+</div>
+
+<div class="card" id="optCard" hidden>
+  <h2>Expected daily profit vs. order quantity</h2>
+  <div class="chart"><canvas id="c2"></canvas></div>
+  <small id="optNote"></small>
+</div>
+
+<div class="card">
+  <h2>Random-digit assignments</h2>
+  <div class="tw"><table id="digits"></table></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const money = v => (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
+let rows = [], shown = 0, timer = null, c1 = null;
+
+const params = () => ({
+  days: +$("days").value, q: +$("q").value, cost: +$("cost").value,
+  price: +$("price").value, scrap: +$("scrap").value,
+  seed: $("seed").value === "" ? null : +$("seed").value
+});
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  return r.json();
+}
+
+function render() {
+  const part = rows.slice(0, shown);
+  $("tb").innerHTML = part.map(r => `<tr><td>${r.day}</td><td>${String(r.rd1).padStart(2,"0")}</td><td>${r.type}</td>
+    <td>${String(r.rd2).padStart(2,"0")}</td><td>${r.demand}</td><td>${money(r.revenue)}</td><td>${money(r.cost)}</td>
+    <td>${r.lost ? money(-r.lost) : "–"}</td><td>${r.salvage ? money(r.salvage) : "–"}</td>
+    <td class="${r.profit < 0 ? "neg" : ""}">${money(r.profit)}</td></tr>`).join("");
+  $("tb").parentElement.parentElement.scrollTop = 1e9;
+  const tot = part.reduce((s, r) => s + r.profit, 0);
+  $("sTotal").textContent = part.length ? money(tot) : "–";
+  $("sAvg").textContent = part.length ? money(tot / part.length) : "–";
+  $("sShort").textContent = part.filter(r => r.lost > 0).length;
+  $("sExcess").textContent = part.filter(r => r.salvage > 0).length;
+  let cum = 0;
+  const data = part.map(r => +(cum += r.profit).toFixed(2));
+  if (c1) c1.destroy();
+  c1 = new Chart($("c1"), {type: "line",
+    data: {labels: part.map(r => r.day), datasets: [{label: "Cumulative profit ($)", data, borderColor: "#2563eb", pointRadius: 2, tension: .2}]},
+    options: {maintainAspectRatio: false, animation: false}});
+}
+
+async function load() {
+  stop();
+  const res = await post("/api/simulate", params());
+  rows = res.rows; return rows;
+}
+function stop() { clearInterval(timer); timer = null; $("play").textContent = "Animate"; }
+
+$("run").onclick = async () => { await load(); shown = rows.length; render(); };
+$("step").onclick = async () => {
+  if (!rows.length || shown >= rows.length) { await load(); shown = 0; }
+  shown++; render();
+};
+$("play").onclick = async () => {
+  if (timer) return stop();
+  await load(); shown = 0; render();
+  $("play").textContent = "Stop";
+  timer = setInterval(() => { if (shown >= rows.length) return stop(); shown++; render(); }, 250);
+};
+
+
+(async () => {
+  const c = await (await fetch("/api/config")).json();
+  const dd = c.demand_digits;
+  let h = "<tr><th>Newsday</th><th>Prob.</th><th>Digits</th></tr>";
+  let lo = 1;
+  c.types.forEach(t => { h += `<tr><td>${t.type}</td><td>${t.p}</td><td>${String(lo).padStart(2,"0")}–${String(t.digits%100).padStart(2,"0")}</td></tr>`; lo = t.digits + 1; });
+  h += "<tr><th>Demand</th>" + c.types.map(t => `<th>${t.type} (prob → digits)</th>`).join("") + "</tr>";
+  c.demands.forEach((d, j) => {
+    h += `<tr><td>${d}</td>` + c.types.map(t => {
+      const p = c.demand_p[t.type][j]; if (!p) return "<td>–</td>";
+      const start = (j ? dd[t.type][j-1] : 0) + 1, end = dd[t.type][j];
+      return `<td>${p.toFixed(2)} → ${String(start).padStart(2,"0")}–${String(end%100).padStart(2,"0")}</td>`;
+    }).join("") + "</tr>";
+  });
+  $("digits").innerHTML = h;
+  $("run").click();
+})();
+</script>
+</body>
+</html>
